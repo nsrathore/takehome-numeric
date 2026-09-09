@@ -1,0 +1,23 @@
+// This is your Prisma schema file.
+// Swap `provider = "sqlite"` for "postgresql" and update DATABASE_URL if you
+// need real concurrency / JSON columns / etc. Everything else stays the same.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// EXAMPLE MODEL — delete or rename this once you know the real domain.
+// Keeping one working model + one working CRUD path around means you can
+// find-and-replace "Item" with your real entity instead of building from zero.
+model Item {
+  id        String   @id @default(cuid())
+  name      String
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
