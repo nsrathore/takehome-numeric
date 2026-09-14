@@ -34,6 +34,17 @@ for whoever reads this first.
 ## Assumptions
 
 - [What you assumed when the spec was ambiguous, and why.]
+- **Suggested price** (`GET /api/game/suggest-price`) assumes a static, known
+  demand curve — it grid-searches the same `calculateDemand` formula/constants
+  used for the actual simulation, treating them as ground truth for every
+  candidate price. Like the demand model itself, this is intentionally not
+  tuned or validated against anything real. It doesn't account for cross-day
+  effects (reputation, repeat customers, a price change today shifting
+  tomorrow's demand) — each day is priced as an independent, memoryless
+  decision. A more realistic version would estimate the demand curve from
+  the game's own observed sales history (e.g. a simple Bayesian or
+  regression fit updated after each day) instead of assuming the fixed
+  formula is correct.
 
 ## What's not done / what I'd do next
 

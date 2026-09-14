@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GameState } from "@prisma/client";
 import { prismaMock } from "@/test/prisma-mock";
+import { RECIPE } from "@/lib/gameConfig";
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
@@ -8,11 +9,13 @@ vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 const {
   buyInventory,
   calculateDemand,
-  calculateMaxSellable,
+  costPerCup,
   getGameHistory,
   getOrCreateGame,
   isBankrupt,
+  maxSellableByInventory,
   setPriceAndSimulateDay,
+  suggestPrice,
 } = await import("./gameService");
 
 function makeGame(overrides: Partial<GameState> = {}): GameState {
@@ -64,17 +67,42 @@ describe("calculateDemand (pure)", () => {
     const demand = calculateDemand({ price: 2.5, dayNumber: 1 }, 1);
     expect(demand).toBe(0);
   });
+
+  // Regression test: PRICE_ELASTICITY=1.2 combined with BASE_PRICE=0.5
+  // clamped demand to exactly 0 for any price >= ~$0.92 -- i.e. for nearly
+  // every "reasonable" price a player would actually try (e.g. $1). The
+  // directional tests above never caught this because they only ever price
+  // at or below BASE_PRICE. Assert an *absolute* positive value at a
+  // realistic above-base price so a similarly degenerate constant change
+  // can't silently pass again.
+  it("still produces positive demand at a realistic price above BASE_PRICE (e.g. $1/cup)", () => {
+    const demand = calculateDemand({ price: 1, dayNumber: 1 }, 1);
+    expect(demand).toBeGreaterThan(0);
+    expect(demand).toBe(50);
+  });
 });
 
-describe("calculateMaxSellable (pure)", () => {
+describe("maxSellableByInventory (pure)", () => {
   it("is limited by the scarcest ingredient", () => {
-    const max = calculateMaxSellable({
-      iceStock: 10,
-      cupsStock: 3,
-      lemonsStock: 10,
-      sugarStock: 10,
-    });
+    const max = maxSellableByInventory(
+      { iceStock: 10, cupsStock: 3, lemonsStock: 10, sugarStock: 10 },
+      RECIPE,
+    );
     expect(max).toBe(3);
+  });
+});
+
+describe("costPerCup (pure)", () => {
+  it("sums each ingredient's per-cup recipe amount times its running average cost", () => {
+    // RECIPE: 1 ice + 1 lemon + 0.5 sugar + 1 cup per cup.
+    const cost = costPerCup({
+      avgIceCost: 0.1,
+      avgLemonCost: 0.2,
+      avgSugarCost: 0.05,
+      avgCupCost: 0.05,
+    });
+    // 1*0.10 + 1*0.20 + 0.5*0.05 + 1*0.05 = 0.375
+    expect(cost).toBeCloseTo(0.375);
   });
 });
 
@@ -262,6 +290,147 @@ describe("setPriceAndSimulateDay", () => {
     >;
     expect(updateData.isBankrupt).toBe(true);
     expect(updateData.isGameOver).toBe(true);
+  });
+
+  it("increases cash by exactly revenue, not profit (buyInventory already paid for COGS)", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const game = makeGame({
+      cash: 20,
+      iceStock: 50,
+      cupsStock: 50,
+      lemonsStock: 50,
+      sugarStock: 50,
+      avgIceCost: 0.1,
+      avgLemonCost: 0.2,
+      avgSugarCost: 0.05,
+      avgCupCost: 0.05,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValue(game);
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "d1", ...data })) as unknown as typeof prismaMock.day.create);
+    prismaMock.gameState.update.mockResolvedValue(makeGame());
+
+    const day = await setPriceAndSimulateDay({ price: 0.5 });
+
+    expect(day.cogs).toBeGreaterThan(0); // sanity: this scenario actually has COGS to double-count
+    expect(day.cashAtEnd).toBeCloseTo(game.cash + day.revenue);
+    expect(day.cashAtEnd).not.toBeCloseTo(game.cash + day.profit);
+
+    const updateData = prismaMock.gameState.update.mock.calls[0]![0]!.data as Record<
+      string,
+      number
+    >;
+    expect(updateData.cash).toBeCloseTo(game.cash + day.revenue);
+  });
+
+  it("across two days, cumulative cash added does not equal cumulative profit when leftover inventory carries COGS", async () => {
+    const day1Game = makeGame({
+      cash: 100,
+      iceStock: 50,
+      cupsStock: 50,
+      lemonsStock: 50,
+      sugarStock: 50,
+      avgIceCost: 0.1,
+      avgLemonCost: 0.2,
+      avgSugarCost: 0.05,
+      avgCupCost: 0.05,
+      currentDay: 1,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValueOnce(day1Game);
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "d1", ...data })) as unknown as typeof prismaMock.day.create);
+    prismaMock.gameState.update.mockResolvedValueOnce(makeGame());
+    // Chain both days' random values on a single spy so consumption order is
+    // guaranteed FIFO (one Math.random() call per setPriceAndSimulateDay call).
+    const randomSpy = vi.spyOn(Math, "random");
+    randomSpy.mockReturnValueOnce(0.05).mockReturnValueOnce(0.08);
+
+    const day1 = await setPriceAndSimulateDay({ price: 0.5 });
+
+    // Leftover cups/lemons/sugar carry forward; ice is replenished for day 2
+    // (as if bought off-screen) so day 2 can also sell.
+    const day1UpdateData = prismaMock.gameState.update.mock.calls[0]![0]!.data as Record<
+      string,
+      number
+    >;
+    const day2Game = makeGame({
+      cash: day1UpdateData.cash,
+      iceStock: 50,
+      cupsStock: day1UpdateData.cupsStock,
+      lemonsStock: day1UpdateData.lemonsStock,
+      sugarStock: day1UpdateData.sugarStock,
+      avgIceCost: 0.1,
+      avgLemonCost: 0.2,
+      avgSugarCost: 0.05,
+      avgCupCost: 0.05,
+      currentDay: 2,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValueOnce(day2Game);
+    prismaMock.gameState.update.mockResolvedValueOnce(makeGame());
+
+    const day2 = await setPriceAndSimulateDay({ price: 0.5 });
+
+    // Both days genuinely had leftover inventory and nonzero COGS.
+    expect(day1.endedEarly).toBe(false);
+    expect(day1.cogs).toBeGreaterThan(0);
+    expect(day2.cogs).toBeGreaterThan(0);
+
+    const cumulativeCashAdded = day1.revenue + day2.revenue;
+    const cumulativeProfit = day1.profit + day2.profit;
+    expect(cumulativeCashAdded).not.toBeCloseTo(cumulativeProfit);
+    expect(cumulativeCashAdded).toBeCloseTo(cumulativeProfit + day1.cogs + day2.cogs);
+  });
+});
+
+describe("suggestPrice (pure)", () => {
+  it("returns a local profit optimum: no adjacent grid point beats it", () => {
+    const params = {
+      weather: "normal" as const,
+      dayNumber: 1,
+      costPerCup: 0.2,
+      maxSellable: 1000,
+      priceMin: 0,
+      priceMax: 1.5,
+      steps: 30,
+    };
+
+    const result = suggestPrice(params);
+
+    // Independently recompute the same grid the implementation searches,
+    // using the same pure calculateDemand function, and verify nothing
+    // beats the returned candidate -- not just its immediate neighbors.
+    let bestProfit = -Infinity;
+    for (let i = 0; i <= params.steps; i++) {
+      const price = params.priceMin + ((params.priceMax - params.priceMin) * i) / params.steps;
+      const demand = calculateDemand({ price, weather: params.weather, dayNumber: params.dayNumber }, 1);
+      const sales = Math.min(demand, params.maxSellable);
+      const profit = sales * (price - params.costPerCup);
+      bestProfit = Math.max(bestProfit, profit);
+    }
+
+    expect(result.expectedProfit).toBeCloseTo(bestProfit);
+
+    // Explicitly check the immediate neighbors on the actual grid step size.
+    const step = (params.priceMax - params.priceMin) / params.steps;
+    for (const neighborPrice of [result.suggestedPrice - step, result.suggestedPrice + step]) {
+      if (neighborPrice < params.priceMin || neighborPrice > params.priceMax) continue;
+      const demand = calculateDemand(
+        { price: neighborPrice, weather: params.weather, dayNumber: params.dayNumber },
+        1,
+      );
+      const sales = Math.min(demand, params.maxSellable);
+      const neighborProfit = sales * (neighborPrice - params.costPerCup);
+      expect(result.expectedProfit).toBeGreaterThanOrEqual(neighborProfit);
+    }
+  });
+
+  it("prices higher when inventory is the binding constraint than when it's unconstrained", () => {
+    const shared = { weather: "normal" as const, dayNumber: 1, costPerCup: 0.2 };
+
+    const unconstrained = suggestPrice({ ...shared, maxSellable: 100_000 });
+    const constrained = suggestPrice({ ...shared, maxSellable: 1 });
+
+    expect(constrained.suggestedPrice).toBeGreaterThan(unconstrained.suggestedPrice);
   });
 });
 

@@ -21,7 +21,12 @@ export const BASE_INGREDIENT_COST = {
 export const STARTING_CASH = 20;
 export const BASE_PRICE = 0.5;
 export const BASE_DEMAND = 100;
-export const PRICE_ELASTICITY = 1.2;
+// NOTE: calculateDemand's priceMultiplier clamps to 0 once
+// price >= BASE_PRICE * (1 + 1/PRICE_ELASTICITY). At the original value of
+// 1.2 that threshold was ~$0.92 -- meaning almost every "reasonable-looking"
+// price (e.g. $1, $2) a player would naturally try produced exactly zero
+// demand. Lowered to widen the live price range to roughly $0-$1.50.
+export const PRICE_ELASTICITY = 0.5;
 
 export const WEATHER_MULTIPLIERS = {
   sunny: 1.2,

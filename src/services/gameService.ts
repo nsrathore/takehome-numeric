@@ -16,9 +16,10 @@ import {
 // 1. Zod schemas validate input at the top of each function.
 // 2. Plain async functions hold the business logic (framework-agnostic,
 //    unit-tested here without HTTP mocking).
-// 3. Pure, side-effect-free helpers (calculateDemand, calculateMaxSellable,
-//    isBankrupt) take their randomness/inputs as explicit arguments so they
-//    can be tested deterministically, separate from the Prisma-touching flow.
+// 3. Pure, side-effect-free helpers (calculateDemand, maxSellableByInventory,
+//    costPerCup, isBankrupt, suggestPrice) take their randomness/inputs as
+//    explicit arguments so they can be tested deterministically, separate
+//    from the Prisma-touching flow.
 
 export class GameError extends Error {
   constructor(message: string) {
@@ -30,7 +31,7 @@ export class GameError extends Error {
 const Ingredient = z.enum(["ice", "cups", "lemons", "sugar"]);
 export type Ingredient = z.infer<typeof Ingredient>;
 
-const WeatherSchema = z.enum(["sunny", "normal", "rainy", "hot"]);
+export const WeatherSchema = z.enum(["sunny", "normal", "rainy", "hot"]);
 
 const STOCK_FIELD = {
   ice: "iceStock",
@@ -112,18 +113,38 @@ export function calculateDemand(
   return Math.round(BASE_DEMAND * priceMultiplier * weatherMultiplier * randomFactor);
 }
 
-/** Pure helper: how many cups current stock can produce. */
-export function calculateMaxSellable(stock: {
-  iceStock: number;
-  cupsStock: number;
-  lemonsStock: number;
-  sugarStock: number;
-}): number {
+type Recipe = {
+  icePerCup: number;
+  cupsPerCup: number;
+  lemonsPerCup: number;
+  sugarPerCup: number;
+};
+
+/** Pure helper: how many cups the current inventory can produce. */
+export function maxSellableByInventory(
+  inventory: { iceStock: number; cupsStock: number; lemonsStock: number; sugarStock: number },
+  recipe: Recipe,
+): number {
   return Math.min(
-    Math.floor(stock.iceStock / RECIPE.icePerCup),
-    Math.floor(stock.cupsStock / RECIPE.cupsPerCup),
-    Math.floor(stock.lemonsStock / RECIPE.lemonsPerCup),
-    Math.floor(stock.sugarStock / RECIPE.sugarPerCup),
+    Math.floor(inventory.iceStock / recipe.icePerCup),
+    Math.floor(inventory.cupsStock / recipe.cupsPerCup),
+    Math.floor(inventory.lemonsStock / recipe.lemonsPerCup),
+    Math.floor(inventory.sugarStock / recipe.sugarPerCup),
+  );
+}
+
+/** Pure helper: blended per-cup ingredient cost at current running averages. */
+export function costPerCup(game: {
+  avgIceCost: number;
+  avgLemonCost: number;
+  avgSugarCost: number;
+  avgCupCost: number;
+}): number {
+  return (
+    RECIPE.icePerCup * game.avgIceCost +
+    RECIPE.lemonsPerCup * game.avgLemonCost +
+    RECIPE.sugarPerCup * game.avgSugarCost +
+    RECIPE.cupsPerCup * game.avgCupCost
   );
 }
 
@@ -232,8 +253,8 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
 
   const demand = calculateDemand({ price, weather, dayNumber: game.currentDay }, Math.random());
 
-  const maxSellableByInventory = calculateMaxSellable(game);
-  const unitsSold = Math.max(0, Math.min(demand, maxSellableByInventory));
+  const maxSellable = maxSellableByInventory(game, RECIPE);
+  const unitsSold = Math.max(0, Math.min(demand, maxSellable));
   const endedEarly = unitsSold < demand;
 
   const newCupsStock = game.cupsStock - unitsSold * RECIPE.cupsPerCup;
@@ -241,25 +262,27 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
   const newSugarStock = game.sugarStock - unitsSold * RECIPE.sugarPerCup;
 
   const revenue = unitsSold * price;
-  const perCupCost =
-    RECIPE.icePerCup * game.avgIceCost +
-    RECIPE.lemonsPerCup * game.avgLemonCost +
-    RECIPE.sugarPerCup * game.avgSugarCost +
-    RECIPE.cupsPerCup * game.avgCupCost;
-  const cogs = unitsSold * perCupCost;
+  const cogs = unitsSold * costPerCup(game);
   const profit = revenue - cogs;
-  const cashAtEnd = game.cash + profit;
+  // Cash only tracks revenue here, not profit: buyInventory already deducted
+  // the full ingredient cost from cash at purchase time, so subtracting cogs
+  // again here would double-count it. `profit` is still stored on the Day
+  // record below as a reporting metric — it just doesn't drive the balance.
+  const cashAtEnd = game.cash + revenue;
 
   // Ice melts to zero regardless of what's left; everything else carries
   // forward into the next day unchanged.
   const meltedIceStock = 0;
 
-  const maxSellableAfterMelt = calculateMaxSellable({
-    iceStock: meltedIceStock,
-    cupsStock: newCupsStock,
-    lemonsStock: newLemonsStock,
-    sugarStock: newSugarStock,
-  });
+  const maxSellableAfterMelt = maxSellableByInventory(
+    {
+      iceStock: meltedIceStock,
+      cupsStock: newCupsStock,
+      lemonsStock: newLemonsStock,
+      sugarStock: newSugarStock,
+    },
+    RECIPE,
+  );
   const bankrupt = isBankrupt(cashAtEnd, maxSellableAfterMelt);
 
   const day = await prisma.day.create({
@@ -293,6 +316,59 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
   });
 
   return day;
+}
+
+export type PriceSuggestion = {
+  suggestedPrice: number;
+  expectedDemand: number;
+  expectedSales: number;
+  expectedRevenue: number;
+  expectedProfit: number;
+};
+
+/**
+ * Pure grid search over candidate prices for the one that maximizes
+ * expected profit, given a known cost-per-cup and inventory ceiling.
+ * `randomFactor: 1` is used for every candidate (not `Math.random()`) since
+ * this estimates an *expected* outcome, not a simulated one -- keeping it
+ * pure/deterministic like `calculateDemand` itself.
+ */
+export function suggestPrice({
+  weather,
+  dayNumber,
+  costPerCup,
+  maxSellable,
+  priceMin = 0,
+  priceMax = BASE_PRICE * 3,
+  steps = 60,
+}: {
+  weather?: Weather;
+  dayNumber: number;
+  costPerCup: number;
+  maxSellable: number;
+  priceMin?: number;
+  priceMax?: number;
+  steps?: number;
+}): PriceSuggestion {
+  let best: PriceSuggestion | undefined;
+
+  for (let i = 0; i <= steps; i++) {
+    const price = priceMin + ((priceMax - priceMin) * i) / steps;
+    const expectedDemand = calculateDemand({ price, weather, dayNumber }, 1);
+    const expectedSales = Math.min(expectedDemand, maxSellable);
+    const expectedRevenue = expectedSales * price;
+    const expectedProfit = expectedSales * (price - costPerCup);
+
+    if (!best || expectedProfit > best.expectedProfit) {
+      best = { suggestedPrice: price, expectedDemand, expectedSales, expectedRevenue, expectedProfit };
+    }
+  }
+
+  // Unreachable in practice: the loop always runs at least once (i=0).
+  if (!best) {
+    throw new GameError("Unable to compute a price suggestion.");
+  }
+  return best;
 }
 
 export async function getGameHistory() {

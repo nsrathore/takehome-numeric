@@ -29,6 +29,14 @@ type Day = {
   cashAtEnd: number;
 };
 
+type Suggestion = {
+  suggestedPrice: number;
+  expectedDemand: number;
+  expectedSales: number;
+  expectedRevenue: number;
+  expectedProfit: number;
+};
+
 const INGREDIENTS = ["ice", "cups", "lemons", "sugar"] as const;
 const WEATHERS = ["normal", "sunny", "rainy", "hot"] as const;
 
@@ -55,6 +63,8 @@ export default function GamePage() {
   const [price, setPrice] = useState("0.5");
   const [weather, setWeather] = useState<(typeof WEATHERS)[number]>("normal");
   const [lastDay, setLastDay] = useState<Day | null>(null);
+  const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -107,7 +117,24 @@ export default function GamePage() {
       return;
     }
     setLastDay(data.day);
+    setSuggestion(null);
     await loadGame();
+  }
+
+  async function handleSuggestPrice() {
+    setError(null);
+    setSuggestLoading(true);
+    try {
+      const res = await fetch(`/api/game/suggest-price?weather=${weather}`);
+      const data = await res.json();
+      if (!res.ok) {
+        setError(typeof data.error === "string" ? data.error : JSON.stringify(data.error));
+        return;
+      }
+      setSuggestion(data.suggestion);
+    } finally {
+      setSuggestLoading(false);
+    }
   }
 
   async function handleNewGame() {
@@ -242,7 +269,34 @@ export default function GamePage() {
           >
             Run the day
           </button>
+          <button
+            type="button"
+            onClick={handleSuggestPrice}
+            disabled={suggestLoading}
+            className="rounded-md border border-slate-300 px-4 py-2 text-sm hover:bg-slate-50 disabled:opacity-50"
+          >
+            {suggestLoading ? "Thinking…" : "Suggest price"}
+          </button>
         </div>
+
+        {suggestion && (
+          <div className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 text-sm">
+            <p>
+              For <span className="capitalize">{weather}</span> weather, the estimated
+              profit-maximizing price is{" "}
+              <span className="font-semibold">{money(suggestion.suggestedPrice)}</span> — expected
+              demand {suggestion.expectedDemand}, sales {suggestion.expectedSales}, revenue{" "}
+              {money(suggestion.expectedRevenue)}, profit {money(suggestion.expectedProfit)}.
+            </p>
+            <button
+              type="button"
+              onClick={() => setPrice(suggestion.suggestedPrice.toFixed(2))}
+              className="mt-2 rounded-md bg-slate-900 px-3 py-1 text-xs text-white hover:bg-slate-700"
+            >
+              Use this price
+            </button>
+          </div>
+        )}
       </form>
 
       {lastDay && (
