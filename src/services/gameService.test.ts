@@ -246,6 +246,70 @@ describe("setPriceAndSimulateDay", () => {
     expect(day.unitsDemanded).toBeGreaterThan(3);
     expect(day.unitsSold).toBe(3);
     expect(day.endedEarly).toBe(true);
+    expect(day.peopleTurnedAway).toBe(day.unitsDemanded - 3);
+  });
+
+  it("sells exactly unitsDemanded, with no one turned away, when inventory fully covers demand", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.1);
+    const game = makeGame({
+      cash: 20,
+      iceStock: 1000,
+      cupsStock: 1000,
+      lemonsStock: 1000,
+      sugarStock: 1000,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValue(game);
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "d1", ...data })) as unknown as typeof prismaMock.day.create);
+    prismaMock.gameState.update.mockResolvedValue(makeGame());
+
+    const day = await setPriceAndSimulateDay({ price: 0.5 });
+
+    expect(day.unitsDemanded).toBeGreaterThan(0); // sanity: this scenario has real demand to satisfy
+    expect(day.unitsSold).toBe(day.unitsDemanded);
+    expect(day.endedEarly).toBe(false);
+    expect(day.peopleTurnedAway).toBe(0);
+  });
+
+  // Regression check: the explicit unit-by-unit loop is an architecture
+  // change (transparency + future extensibility), not a behavior change --
+  // confirm it produces the exact same numbers the old
+  // min(demand, maxSellableByInventory) formula would have.
+  it("produces the same unitsSold/revenue/cogs/profit as the old min()-based formula", async () => {
+    const randomFactor = 0.9;
+    vi.spyOn(Math, "random").mockReturnValue(randomFactor);
+    const game = makeGame({
+      cash: 20,
+      iceStock: 7, // the binding constraint
+      cupsStock: 10,
+      lemonsStock: 10,
+      sugarStock: 10,
+      avgIceCost: 0.1,
+      avgLemonCost: 0.2,
+      avgSugarCost: 0.05,
+      avgCupCost: 0.05,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValue(game);
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "d1", ...data })) as unknown as typeof prismaMock.day.create);
+    prismaMock.gameState.update.mockResolvedValue(makeGame());
+
+    const price = 0.5;
+    const expectedDemand = calculateDemand({ price, dayNumber: game.currentDay }, randomFactor);
+    const oldMaxSellable = maxSellableByInventory(game, RECIPE);
+    const oldUnitsSold = Math.min(expectedDemand, oldMaxSellable);
+    const oldRevenue = oldUnitsSold * price;
+    const oldCogs = oldUnitsSold * costPerCup(game);
+    const oldProfit = oldRevenue - oldCogs;
+
+    const day = await setPriceAndSimulateDay({ price });
+
+    expect(oldMaxSellable).toBe(7); // sanity: ice is genuinely the binding constraint here
+    expect(day.unitsDemanded).toBe(expectedDemand);
+    expect(day.unitsSold).toBe(oldUnitsSold);
+    expect(day.revenue).toBeCloseTo(oldRevenue);
+    expect(day.cogs).toBeCloseTo(oldCogs);
+    expect(day.profit).toBeCloseTo(oldProfit);
   });
 
   it("melts ice to 0 after the day while other ingredients carry forward what's left", async () => {

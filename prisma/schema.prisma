@@ -42,9 +42,13 @@ model Day {
   price     Float
   weather   String?
 
-  unitsDemanded Int
-  unitsSold     Int
-  endedEarly    Boolean @default(false)
+  // Number of people who wanted lemonade that day. Recipe is 1 cup per
+  // person, so this is also "number of people" -- there is deliberately no
+  // separate field for that; don't add one.
+  unitsDemanded    Int
+  unitsSold        Int
+  endedEarly       Boolean @default(false) // true when inventory ran out before demand was met (sold out)
+  peopleTurnedAway Int     @default(0) // unitsDemanded - unitsSold, i.e. people who wanted a cup but couldn't get one
 
   revenue Float
   cogs    Float

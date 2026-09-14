@@ -17,9 +17,9 @@ import {
 // 2. Plain async functions hold the business logic (framework-agnostic,
 //    unit-tested here without HTTP mocking).
 // 3. Pure, side-effect-free helpers (calculateDemand, maxSellableByInventory,
-//    costPerCup, isBankrupt, suggestPrice) take their randomness/inputs as
-//    explicit arguments so they can be tested deterministically, separate
-//    from the Prisma-touching flow.
+//    canMakeOneMoreCup, costPerCup, isBankrupt, suggestPrice) take their
+//    randomness/inputs as explicit arguments so they can be tested
+//    deterministically, separate from the Prisma-touching flow.
 
 export class GameError extends Error {
   constructor(message: string) {
@@ -153,6 +153,18 @@ export function isBankrupt(cash: number, maxSellableByInventory: number): boolea
   return cash <= 0 && maxSellableByInventory < 1;
 }
 
+type Inventory = { iceStock: number; cupsStock: number; lemonsStock: number; sugarStock: number };
+
+/** Pure helper: does inventory have at least one full recipe's worth left? */
+export function canMakeOneMoreCup(inventory: Inventory): boolean {
+  return (
+    inventory.iceStock >= RECIPE.icePerCup &&
+    inventory.cupsStock >= RECIPE.cupsPerCup &&
+    inventory.lemonsStock >= RECIPE.lemonsPerCup &&
+    inventory.sugarStock >= RECIPE.sugarPerCup
+  );
+}
+
 function unitCostForQuantity(ingredient: Ingredient, quantity: number): number {
   const tier = BULK_DISCOUNT_TIERS.find((t) => quantity >= t.minQty);
   const discount = tier?.discount ?? 0;
@@ -253,13 +265,35 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
 
   const demand = calculateDemand({ price, weather, dayNumber: game.currentDay }, Math.random());
 
-  const maxSellable = maxSellableByInventory(game, RECIPE);
-  const unitsSold = Math.max(0, Math.min(demand, maxSellable));
-  const endedEarly = unitsSold < demand;
+  // Serve customers one at a time rather than computing unitsSold in closed
+  // form (min(demand, maxSellableByInventory)) -- mathematically equivalent
+  // for now, but this explicit loop is what makes future per-customer
+  // variation (different order sizes, walk-away behavior, etc.) a small
+  // change instead of a rewrite.
+  let inventory: Inventory = {
+    iceStock: game.iceStock,
+    cupsStock: game.cupsStock,
+    lemonsStock: game.lemonsStock,
+    sugarStock: game.sugarStock,
+  };
+  let peopleServed = 0;
+  for (let i = 0; i < demand; i++) {
+    if (!canMakeOneMoreCup(inventory)) break; // sold out
+    inventory = {
+      iceStock: inventory.iceStock - RECIPE.icePerCup,
+      cupsStock: inventory.cupsStock - RECIPE.cupsPerCup,
+      lemonsStock: inventory.lemonsStock - RECIPE.lemonsPerCup,
+      sugarStock: inventory.sugarStock - RECIPE.sugarPerCup,
+    };
+    peopleServed++;
+  }
+  const unitsSold = peopleServed;
+  const soldOut = peopleServed < demand; // stored on Day.endedEarly (no separate field for the same thing)
+  const peopleTurnedAway = demand - peopleServed;
 
-  const newCupsStock = game.cupsStock - unitsSold * RECIPE.cupsPerCup;
-  const newLemonsStock = game.lemonsStock - unitsSold * RECIPE.lemonsPerCup;
-  const newSugarStock = game.sugarStock - unitsSold * RECIPE.sugarPerCup;
+  const newCupsStock = inventory.cupsStock;
+  const newLemonsStock = inventory.lemonsStock;
+  const newSugarStock = inventory.sugarStock;
 
   const revenue = unitsSold * price;
   const cogs = unitsSold * costPerCup(game);
@@ -292,7 +326,8 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
       weather: weather ?? null,
       unitsDemanded: demand,
       unitsSold,
-      endedEarly,
+      endedEarly: soldOut,
+      peopleTurnedAway,
       revenue,
       cogs,
       profit,

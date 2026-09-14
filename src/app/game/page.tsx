@@ -1,6 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import {
+  CartesianGrid,
+  Legend,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 type GameState = {
   id: string;
@@ -22,6 +32,7 @@ type Day = {
   unitsDemanded: number;
   unitsSold: number;
   endedEarly: boolean;
+  peopleTurnedAway: number;
   revenue: number;
   cogs: number;
   profit: number;
@@ -42,6 +53,18 @@ const WEATHERS = ["normal", "sunny", "rainy", "hot"] as const;
 
 function money(n: number) {
   return `$${n.toFixed(2)}`;
+}
+
+type HistoryDotProps = { cx?: number; cy?: number; payload?: Day };
+
+// Renders a small red square on sold-out days instead of the normal dot, so
+// they're visible at a glance without a separate legend entry.
+function CashHistoryDot({ cx, cy, payload }: HistoryDotProps) {
+  if (cx === undefined || cy === undefined || !payload) return null;
+  if (payload.endedEarly) {
+    return <rect x={cx - 4} y={cy - 4} width={8} height={8} fill="#dc2626" stroke="#7f1d1d" />;
+  }
+  return <circle cx={cx} cy={cy} r={3} fill="#0f172a" />;
 }
 
 function flavorText(day: Day) {
@@ -65,6 +88,7 @@ export default function GamePage() {
   const [lastDay, setLastDay] = useState<Day | null>(null);
   const [suggestion, setSuggestion] = useState<Suggestion | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
+  const [history, setHistory] = useState<Day[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -76,8 +100,15 @@ export default function GamePage() {
     setLoading(false);
   }
 
+  async function loadHistory() {
+    const res = await fetch("/api/game/history");
+    const data = await res.json();
+    setHistory(data.days ?? []);
+  }
+
   useEffect(() => {
     loadGame();
+    loadHistory();
   }, []);
 
   async function handleBuy(e: React.FormEvent) {
@@ -119,6 +150,7 @@ export default function GamePage() {
     setLastDay(data.day);
     setSuggestion(null);
     await loadGame();
+    await loadHistory();
   }
 
   async function handleSuggestPrice() {
@@ -140,9 +172,11 @@ export default function GamePage() {
   async function handleNewGame() {
     setError(null);
     setLastDay(null);
+    setSuggestion(null);
     const res = await fetch("/api/game", { method: "POST" });
     const data = await res.json();
     setGame(data.game);
+    await loadHistory();
   }
 
   if (loading || !game) {
@@ -303,6 +337,12 @@ export default function GamePage() {
         <section className="mt-8 rounded-md border border-slate-200 p-4">
           <h2 className="text-lg font-semibold">Day {lastDay.dayNumber} results</h2>
           <p className="mt-1 text-sm text-slate-600">{flavorText(lastDay)}</p>
+          {lastDay.endedEarly && (
+            <p className="mt-1 text-sm text-amber-700">
+              Sold out! {lastDay.unitsDemanded} people wanted lemonade, you served{" "}
+              {lastDay.unitsSold}, {lastDay.peopleTurnedAway} were turned away.
+            </p>
+          )}
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
             <div>
               <dt className="text-slate-500">Demand</dt>
@@ -332,6 +372,47 @@ export default function GamePage() {
           </dl>
         </section>
       )}
+
+      <section className="mt-8 rounded-md border border-slate-200 p-4">
+        <h2 className="text-lg font-semibold">Game History</h2>
+        <p className="mt-1 text-sm text-slate-500">
+          Cash and profit by day.{" "}
+          <span className="inline-block h-2 w-2 bg-red-600 align-middle" /> marks a sold-out day.
+        </p>
+        {history.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-500">No days played yet.</p>
+        ) : (
+          <div className="mt-3" style={{ width: "100%", height: 260 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={history} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="dayNumber" tick={{ fontSize: 12 }} />
+                <YAxis tick={{ fontSize: 12 }} tickFormatter={(v: number) => `$${v}`} />
+                <Tooltip
+                  formatter={(value, name) => [typeof value === "number" ? money(value) : value, name]}
+                  labelFormatter={(label) => `Day ${label}`}
+                />
+                <Legend />
+                <Line
+                  type="monotone"
+                  dataKey="cashAtEnd"
+                  name="Cash"
+                  stroke="#0f172a"
+                  dot={<CashHistoryDot />}
+                  activeDot={{ r: 5 }}
+                />
+                <Line
+                  type="monotone"
+                  dataKey="profit"
+                  name="Profit"
+                  stroke="#059669"
+                  dot={{ r: 3 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
     </main>
   );
 }
