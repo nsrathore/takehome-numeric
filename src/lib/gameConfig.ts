@@ -48,3 +48,12 @@ export const BULK_DISCOUNT_TIERS = [
   { minQty: 50, discount: 0.2 },
   { minQty: 20, discount: 0.1 },
 ] as const;
+
+// Variance-day detection thresholds. All arbitrary/tunable, consistent with
+// the rest of this file -- these pick a reasonable-looking sensitivity, not
+// a statistically validated one.
+export const ROLLING_WINDOW_DAYS = 7; // trailing days considered
+export const MIN_DAYS_FOR_VARIANCE = 3; // no flagging before this much history exists
+export const VARIANCE_Z_THRESHOLD = 1.5; // |z| beyond this = flagged
+export const PRICE_DEVIATION_THRESHOLD = 0.15; // 15%, used only in the explanation text
+export const DEMAND_DEVIATION_THRESHOLD = 0.25; // 25%, used only in the explanation text

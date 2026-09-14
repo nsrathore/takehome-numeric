@@ -8,10 +8,12 @@ import {
   DEMAND_NOISE_RANGE,
   PRICE_ELASTICITY,
   RECIPE,
+  ROLLING_WINDOW_DAYS,
   STARTING_CASH,
   WEATHER_MULTIPLIERS,
   type Weather,
 } from "@/lib/gameConfig";
+import { computeVarianceStats, generateVarianceExplanation } from "@/lib/variance";
 
 // Reference service for this app's layering convention:
 // 1. Zod schemas validate input at the top of each function.
@@ -330,6 +332,28 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
   );
   const bankrupt = isBankrupt(cashAtEnd, maxSellableAfterMelt);
 
+  // Trailing window for variance-day detection: most recent days first from
+  // the DB, then reversed to chronological order (oldest..newest) for the
+  // explanation text's "recent average" framing.
+  const priorDaysDesc = await prisma.day.findMany({
+    orderBy: { dayNumber: "desc" },
+    take: ROLLING_WINDOW_DAYS,
+  });
+  const priorDays = priorDaysDesc.slice().reverse();
+
+  const varianceStats = computeVarianceStats(
+    profit,
+    priorDays.map((d) => d.profit),
+  );
+  const varianceExplanation = varianceStats.isVarianceDay
+    ? JSON.stringify(
+        generateVarianceExplanation(
+          { price, weather: weather ?? null, soldOut, peopleTurnedAway, unitsDemanded: demand },
+          priorDays.map((d) => ({ price: d.price, weather: d.weather, unitsDemanded: d.unitsDemanded })),
+        ),
+      )
+    : null;
+
   const day = await prisma.day.create({
     data: {
       dayNumber: game.currentDay,
@@ -342,6 +366,9 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
       revenue,
       cogs,
       profit,
+      isVarianceDay: varianceStats.isVarianceDay,
+      varianceZScore: varianceStats.zScore,
+      varianceExplanation,
       cashAtStart: game.cash,
       cashAtEnd,
     },

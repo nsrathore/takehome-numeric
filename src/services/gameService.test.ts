@@ -1,7 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GameState } from "@prisma/client";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Day, GameState } from "@prisma/client";
 import { prismaMock } from "@/test/prisma-mock";
-import { BASE_DEMAND, BASE_PRICE, DEMAND_NOISE_RANGE, RECIPE } from "@/lib/gameConfig";
+import { BASE_DEMAND, BASE_PRICE, DEMAND_NOISE_RANGE, RECIPE, ROLLING_WINDOW_DAYS } from "@/lib/gameConfig";
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
@@ -36,6 +36,29 @@ function makeGame(overrides: Partial<GameState> = {}): GameState {
     isBankrupt: false,
     createdAt: new Date(),
     updatedAt: new Date(),
+    ...overrides,
+  };
+}
+
+function makeDay(overrides: Partial<Day> = {}): Day {
+  return {
+    id: "day-x",
+    dayNumber: 1,
+    price: 0.5,
+    weather: "normal",
+    unitsDemanded: 0,
+    unitsSold: 0,
+    endedEarly: false,
+    peopleTurnedAway: 0,
+    revenue: 0,
+    cogs: 0,
+    profit: 0,
+    cashAtStart: 0,
+    cashAtEnd: 0,
+    isVarianceDay: false,
+    varianceZScore: null,
+    varianceExplanation: null,
+    createdAt: new Date(),
     ...overrides,
   };
 }
@@ -262,6 +285,14 @@ describe("buyInventory", () => {
 });
 
 describe("setPriceAndSimulateDay", () => {
+  // setPriceAndSimulateDay fetches trailing Day rows for variance detection.
+  // Default to "no prior history" so existing tests that don't care about
+  // variance detection aren't forced to mock it individually; tests that do
+  // care override this with their own mockResolvedValue(Once).
+  beforeEach(() => {
+    prismaMock.day.findMany.mockResolvedValue([]);
+  });
+
   it("rejects an invalid price before hitting the database", async () => {
     await expect(setPriceAndSimulateDay({ price: 0 })).rejects.toThrow();
     expect(prismaMock.day.create).not.toHaveBeenCalled();
@@ -491,6 +522,79 @@ describe("setPriceAndSimulateDay", () => {
     const cumulativeProfit = day1.profit + day2.profit;
     expect(cumulativeCashAdded).not.toBeCloseTo(cumulativeProfit);
     expect(cumulativeCashAdded).toBeCloseTo(cumulativeProfit + day1.cogs + day2.cogs);
+  });
+
+  it("flags a clear outlier day as a variance day, using the seeded prior Day rows", async () => {
+    // noiseFactor = 1 - 0.2 + 0.5*0.4 = 1.0 -> demand = round(100*1*1*1.0) = 100
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const game = makeGame({
+      cash: 1000,
+      iceStock: 1000,
+      cupsStock: 1000,
+      lemonsStock: 1000,
+      sugarStock: 1000,
+      // Free ingredients -> cogs = 0 -> profit = revenue, keeping the
+      // expected outcome simple to reason about.
+      avgIceCost: 0,
+      avgLemonCost: 0,
+      avgSugarCost: 0,
+      avgCupCost: 0,
+      currentDay: 4,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValue(game);
+    prismaMock.gameState.update.mockResolvedValue(makeGame());
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "today", ...data })) as unknown as typeof prismaMock.day.create);
+
+    // Seeded as the real findMany({ orderBy: { dayNumber: "desc" } }) call
+    // would return: most-recent-first, tightly clustered profits ($4/$5/$6).
+    const priorDaysDesc = [
+      makeDay({ id: "d3", dayNumber: 3, profit: 6 }),
+      makeDay({ id: "d2", dayNumber: 2, profit: 5 }),
+      makeDay({ id: "d1", dayNumber: 1, profit: 4 }),
+    ];
+    prismaMock.day.findMany.mockResolvedValue(priorDaysDesc);
+
+    const day = await setPriceAndSimulateDay({ price: 0.5, weather: "normal" });
+
+    expect(prismaMock.day.findMany).toHaveBeenCalledWith({
+      orderBy: { dayNumber: "desc" },
+      take: ROLLING_WINDOW_DAYS,
+    });
+
+    // mean=5, stddev=sqrt(((4-5)^2+(5-5)^2+(6-5)^2)/3) = sqrt(2/3)
+    const expectedMean = 5;
+    const expectedStddev = Math.sqrt(2 / 3);
+    expect(day.profit).toBeCloseTo(100 * 0.5); // unitsSold(100) * price(0.5), cogs=0
+    expect(day.isVarianceDay).toBe(true);
+    expect(day.varianceZScore).toBeCloseTo((day.profit - expectedMean) / expectedStddev);
+    expect(day.varianceExplanation).not.toBeNull();
+    const bullets = JSON.parse(day.varianceExplanation as string);
+    expect(Array.isArray(bullets)).toBe(true);
+    expect(bullets.length).toBeGreaterThan(0);
+  });
+
+  it("leaves varianceZScore/varianceExplanation null when the day isn't a variance day", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    const game = makeGame({
+      cash: 1000,
+      iceStock: 1000,
+      cupsStock: 1000,
+      lemonsStock: 1000,
+      sugarStock: 1000,
+      currentDay: 1,
+    });
+    prismaMock.gameState.findFirst.mockResolvedValue(game);
+    prismaMock.gameState.update.mockResolvedValue(makeGame());
+    prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
+      Promise.resolve({ id: "today", ...data })) as unknown as typeof prismaMock.day.create);
+    prismaMock.day.findMany.mockResolvedValue([]); // no history yet -- below MIN_DAYS_FOR_VARIANCE
+
+    const day = await setPriceAndSimulateDay({ price: 0.5, weather: "normal" });
+
+    expect(day.isVarianceDay).toBe(false);
+    expect(day.varianceZScore).toBeNull();
+    expect(day.varianceExplanation).toBeNull();
   });
 });
 

@@ -57,6 +57,10 @@ model Day {
   cashAtStart Float
   cashAtEnd   Float
 
+  isVarianceDay       Boolean @default(false)
+  varianceZScore      Float?
+  varianceExplanation String? // JSON.stringify'd array of bullet strings; JSON.parse client-side (not Prisma's Json type, to stay consistent with the rest of this schema)
+
   createdAt DateTime @default(now())
 }
 

@@ -50,7 +50,20 @@ type Day = {
   profit: number;
   cashAtStart: number;
   cashAtEnd: number;
+  isVarianceDay: boolean;
+  varianceZScore: number | null;
+  varianceExplanation: string | null; // JSON.stringify'd array of bullet strings
 };
+
+function parseVarianceExplanation(explanation: string | null): string[] {
+  if (!explanation) return [];
+  try {
+    const parsed = JSON.parse(explanation);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 type Suggestion = {
   suggestedPrice: number;
@@ -69,24 +82,47 @@ function money(n: number) {
 
 type HistoryDotProps = { cx?: number; cy?: number; payload?: Day };
 
+// A halo ring marking a variance day, layered independently of whatever
+// fill color the line's own dot logic below picks -- a day can be both a
+// loss/sold-out day AND a variance day (or a variance day that's still
+// profitable), so this never overwrites the fill, just surrounds it.
+function VarianceRing({ cx, cy }: { cx: number; cy: number }) {
+  return <circle cx={cx} cy={cy} r={7} fill="none" stroke="#d97706" strokeWidth={2} />;
+}
+
 // Renders a small red square on sold-out days instead of the normal dot, so
 // they're visible at a glance without a separate legend entry.
 function CashHistoryDot({ cx, cy, payload }: HistoryDotProps) {
   if (cx === undefined || cy === undefined || !payload) return null;
-  if (payload.endedEarly) {
-    return <rect x={cx - 4} y={cy - 4} width={8} height={8} fill="#dc2626" stroke="#7f1d1d" />;
-  }
-  return <circle cx={cx} cy={cy} r={3} fill="#0f172a" />;
+  const fillShape = payload.endedEarly ? (
+    <rect x={cx - 4} y={cy - 4} width={8} height={8} fill="#dc2626" stroke="#7f1d1d" />
+  ) : (
+    <circle cx={cx} cy={cy} r={3} fill="#0f172a" />
+  );
+  return (
+    <g>
+      {payload.isVarianceDay && <VarianceRing cx={cx} cy={cy} />}
+      {fillShape}
+    </g>
+  );
 }
 
 // Cash can't go negative (buyInventory already blocks over-spending), so
 // only the profit line's dot needs loss-aware coloring.
 function ProfitHistoryDot({ cx, cy, payload }: HistoryDotProps) {
   if (cx === undefined || cy === undefined || !payload) return null;
-  if (payload.profit < 0) {
-    return <circle cx={cx} cy={cy} r={4} fill="#dc2626" stroke="#7f1d1d" />;
-  }
-  return <circle cx={cx} cy={cy} r={3} fill="#059669" />;
+  const fillShape =
+    payload.profit < 0 ? (
+      <circle cx={cx} cy={cy} r={4} fill="#dc2626" stroke="#7f1d1d" />
+    ) : (
+      <circle cx={cx} cy={cy} r={3} fill="#059669" />
+    );
+  return (
+    <g>
+      {payload.isVarianceDay && <VarianceRing cx={cx} cy={cy} />}
+      {fillShape}
+    </g>
+  );
 }
 
 // Explicit numeric Y domain so losses are actually visible: recharts'
@@ -422,6 +458,18 @@ export default function GamePage() {
               {lastDay.unitsSold}, {lastDay.peopleTurnedAway} were turned away.
             </p>
           )}
+          {lastDay.isVarianceDay && (
+            <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3">
+              <p className="text-sm font-semibold text-amber-900">
+                Variance Day (z = {lastDay.varianceZScore?.toFixed(2) ?? "?"})
+              </p>
+              <ul className="mt-1 list-disc pl-5 text-sm text-amber-800">
+                {parseVarianceExplanation(lastDay.varianceExplanation).map((bullet, i) => (
+                  <li key={i}>{bullet}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           <dl className="mt-3 grid grid-cols-2 gap-2 text-sm sm:grid-cols-3">
             <div>
               <dt className="text-slate-500">Demand</dt>
@@ -457,7 +505,8 @@ export default function GamePage() {
         <p className="mt-1 text-sm text-slate-500">
           Cash and profit by day.{" "}
           <span className="inline-block h-2 w-2 bg-red-600 align-middle" /> marks a sold-out day
-          (cash line) or a loss (profit line); the shaded band below $0 is the loss zone.
+          (cash line) or a loss (profit line); the shaded band below $0 is the loss zone. An amber
+          ring marks a variance day (a statistical outlier vs. your recent average, good or bad).
         </p>
         {history.length === 0 ? (
           <p className="mt-3 text-sm text-slate-500">No days played yet.</p>
@@ -510,6 +559,34 @@ export default function GamePage() {
           })()
         )}
       </section>
+
+      {history.some((d) => d.isVarianceDay) && (
+        <section className="mt-8 rounded-md border border-amber-300 bg-amber-50 p-4">
+          <h2 className="text-lg font-semibold text-amber-900">Variance Days</h2>
+          <p className="mt-1 text-sm text-amber-800">
+            Days where profit deviated significantly from your recent trailing average — both
+            unusually good and unusually bad days count.
+          </p>
+          <ul className="mt-3 space-y-3">
+            {history
+              .filter((d) => d.isVarianceDay)
+              .slice()
+              .reverse()
+              .map((d) => (
+                <li key={d.id} className="rounded-md border border-amber-200 bg-white p-3 text-sm">
+                  <p className="font-medium text-amber-900">
+                    Day {d.dayNumber} — z = {d.varianceZScore?.toFixed(2) ?? "?"}
+                  </p>
+                  <ul className="mt-1 list-disc pl-5 text-slate-700">
+                    {parseVarianceExplanation(d.varianceExplanation).map((bullet, i) => (
+                      <li key={i}>{bullet}</li>
+                    ))}
+                  </ul>
+                </li>
+              ))}
+          </ul>
+        </section>
+      )}
 
       <details className="mt-8 rounded-md border border-slate-200 p-4">
         <summary className="cursor-pointer text-lg font-semibold">
