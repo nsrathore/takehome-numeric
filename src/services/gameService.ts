@@ -82,17 +82,22 @@ export async function getOrCreateGame() {
   return existing;
 }
 
+/**
+ * Full wipe: deletes every Purchase, Day, and GameState row. This is a full
+ * wipe rather than a scoped delete because Day/Purchase have no `gameId`
+ * foreign key back to a specific GameState -- the current design assumes
+ * exactly one active game at a time, so there's nothing to scope the delete
+ * to. Scoping this to a single game's data would require adding that FK
+ * (see NOTES.md).
+ *
+ * Callers that want a freshly playable game afterward (e.g. "start a new
+ * game") should call `getOrCreateGame()` next; callers that just want to
+ * end the game (e.g. "exit") can leave it wiped.
+ */
 export async function resetGame() {
-  await prisma.day.deleteMany({});
   await prisma.purchase.deleteMany({});
-  const existing = await prisma.gameState.findFirst();
-  if (existing) {
-    return prisma.gameState.update({
-      where: { id: existing.id },
-      data: defaultGameStateData(),
-    });
-  }
-  return prisma.gameState.create({ data: defaultGameStateData() });
+  await prisma.day.deleteMany({});
+  await prisma.gameState.deleteMany({});
 }
 
 /**

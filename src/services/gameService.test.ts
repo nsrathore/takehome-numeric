@@ -14,6 +14,7 @@ const {
   getOrCreateGame,
   isBankrupt,
   maxSellableByInventory,
+  resetGame,
   setPriceAndSimulateDay,
   suggestPrice,
 } = await import("./gameService");
@@ -145,6 +146,21 @@ describe("getOrCreateGame", () => {
       where: { id: stale.id },
       data: expect.objectContaining({ cash: 20, isGameOver: false, isBankrupt: false }),
     });
+  });
+});
+
+describe("resetGame", () => {
+  it("deletes all Purchase, Day, and GameState rows -- a full wipe, not a scoped delete", async () => {
+    // Seed the mock as if a real game with history existed.
+    prismaMock.purchase.deleteMany.mockResolvedValue({ count: 3 });
+    prismaMock.day.deleteMany.mockResolvedValue({ count: 5 });
+    prismaMock.gameState.deleteMany.mockResolvedValue({ count: 1 });
+
+    await resetGame();
+
+    expect(prismaMock.purchase.deleteMany).toHaveBeenCalledWith({});
+    expect(prismaMock.day.deleteMany).toHaveBeenCalledWith({});
+    expect(prismaMock.gameState.deleteMany).toHaveBeenCalledWith({});
   });
 });
 

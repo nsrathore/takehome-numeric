@@ -13,8 +13,21 @@ export async function GET() {
 
 export async function POST() {
   try {
-    const game = await resetGame();
+    // "Start a new game": wipe everything, then immediately create a fresh,
+    // playable GameState so this route's contract (returns { game }) holds.
+    await resetGame();
+    const game = await getOrCreateGame();
     return NextResponse.json({ game });
+  } catch (err) {
+    console.error(err);
+    return NextResponse.json({ error: "Internal error" }, { status: 500 });
+  }
+}
+
+export async function DELETE() {
+  try {
+    await resetGame();
+    return NextResponse.json({ ok: true });
   } catch (err) {
     console.error(err);
     return NextResponse.json({ error: "Internal error" }, { status: 500 });
