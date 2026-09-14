@@ -7,7 +7,7 @@ description: Write unit tests that match this project's existing testing convent
 
 ## Service-layer logic (the common case)
 
-Follow `src/services/itemService.test.ts` exactly:
+Follow `src/services/gameService.test.ts` exactly:
 
 1. Import `prismaMock` from `src/test/prisma-mock.ts`.
 2. Register it *before* importing the service under test:

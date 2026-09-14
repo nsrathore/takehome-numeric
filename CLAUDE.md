@@ -33,8 +33,8 @@ Run lint + typecheck + test before considering any feature done.
 - `prisma/schema.prisma` — data model.
 - `src/app/**/page.tsx` — UI. Client components fetch from `/api/*` routes.
 
-**The `Item` resource (`itemService.ts`, `api/items/*`, `app/items/page.tsx`,
-`itemService.test.ts`) is the reference implementation of this whole pattern.**
+**The `Game` resource (`gameService.ts`, `api/game/*`, `app/game/page.tsx`,
+`gameService.test.ts`) is the reference implementation of this whole pattern.**
 Copy its shape for every new resource — see the `new-resource` skill.
 
 ## Conventions
@@ -60,11 +60,22 @@ Copy its shape for every new resource — see the `new-resource` skill.
 
 ## Confirmed scope
 
-_Fill this in live during/after the 45-minute design session — don't leave
-it blank once the real prompt arrives._
-
-- **Problem statement:**
-- **Core user flow(s):**
-- **Explicit non-goals (out of scope):**
-- **Data model notes:**
-- **Definition of done for this session:**
+- **Problem statement:** Build a game simulating running a lemonade stand.
+  Each day: acquire inventory (ice, cups, lemons, sugar), set a price,
+  simulate the day's sales. Score = current money. The game is over
+  (bankrupt) if a day ends with no cash AND not enough inventory left to
+  make even one more cup.
+- **Core user flow(s):** buy inventory → set price (+ optional weather) →
+  simulate the day → resolve the day (ice melts to zero, other resources
+  carry forward, bankruptcy check) → advance to next day → repeat until
+  bankrupt.
+- **Explicit non-goals (out of scope):** realistic/tuned demand physics,
+  multiplayer, accounts/auth, persistence beyond a local single-player
+  session, deep market simulation, heavy UI polish.
+- **Data model notes:** `GameState` is a singleton (one active game, no
+  auth). `Day` is a per-day history record. `Purchase` is a per-purchase
+  log, which is what makes weighted-average cost-basis (COGS) possible.
+- **Definition of done for this session:** the full loop is playable
+  end-to-end through the API (buy → price → simulate → repeat until
+  bankrupt), core logic has real unit test coverage, and there's a minimal
+  but functional UI.

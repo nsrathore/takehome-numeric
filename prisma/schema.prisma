@@ -11,13 +11,59 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// EXAMPLE MODEL — delete or rename this once you know the real domain.
-// Keeping one working model + one working CRUD path around means you can
-// find-and-replace "Item" with your real entity instead of building from zero.
-model Item {
-  id        String   @id @default(cuid())
-  name      String
-  notes     String?
+// Singleton — one active game, no auth/multi-tenancy in scope.
+model GameState {
+  id         String  @id @default(cuid())
+  cash       Float
+  currentDay Int     @default(1)
+
+  iceStock    Float @default(0)
+  lemonsStock Float @default(0)
+  sugarStock  Float @default(0)
+  cupsStock   Int   @default(0)
+
+  // Running weighted-average unit cost per ingredient, needed for COGS.
+  avgIceCost    Float @default(0)
+  avgLemonCost  Float @default(0)
+  avgSugarCost  Float @default(0)
+  avgCupCost    Float @default(0)
+
+  isGameOver Boolean @default(false)
+  isBankrupt Boolean @default(false)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Per-day history record, written once per simulated day.
+model Day {
+  id        String  @id @default(cuid())
+  dayNumber Int
+  price     Float
+  weather   String?
+
+  unitsDemanded Int
+  unitsSold     Int
+  endedEarly    Boolean @default(false)
+
+  revenue Float
+  cogs    Float
+  profit  Float
+
+  cashAtStart Float
+  cashAtEnd   Float
+
+  createdAt DateTime @default(now())
+}
+
+// Per-purchase log — makes weighted-average cost-basis (COGS) possible.
+model Purchase {
+  id         String @id @default(cuid())
+  dayNumber  Int
+  ingredient String // "ice" | "cups" | "lemons" | "sugar"
+  quantity   Float
+  unitCost   Float // actual discounted price paid
+  totalCost  Float
+
+  createdAt DateTime @default(now())
 }

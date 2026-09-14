@@ -33,3 +33,13 @@ Template per entry:
 - **Chose:** (a) — downgrade `@prisma/client` to `^5.19.1`.
 - **Why:** Smaller, lower-risk change; keeps the existing schema and code as-is and matches the rest of the v5-era scaffold conventions.
 - **Trade-off / what I gave up:** Stuck on Prisma 5 instead of latest; would need to revisit if the take-home ends up needing a v7-only feature. Verified the fix with a real `npm install` + `db:generate` + `db:push` + typecheck + lint + test run — all green.
+
+---
+
+## [13:00] Lemonade stand data model (GameState/Day/Purchase) and pure-function demand design
+
+- **Context:** The real prompt arrived as a full lemonade-stand simulation game (buy inventory → price → simulate a day → repeat until bankrupt), replacing the placeholder `Item` CRUD scaffold. Needed a data model that supports weighted-average cost-of-goods and a demand formula that's actually unit-testable.
+- **Options considered:** (a) a single `GameState` row storing only current totals vs. (b) `GameState` (singleton) + `Day` (per-day history) + `Purchase` (per-purchase log); for demand, (a) generate randomness inside the function vs. (b) pass `randomFactor` in as an explicit argument.
+- **Chose:** (b) for both — the three-table split, and `calculateDemand`/`calculateMaxSellable`/`isBankrupt` as pure functions that take all their inputs explicitly (including randomness).
+- **Why:** Weighted-average COGS requires knowing the cost of each individual purchase, not just a running stock total, so `Purchase` rows are load-bearing, not just a nice-to-have log. Keeping `Math.random()` out of `calculateDemand` (call sites pass it in) and extracting `isBankrupt`/`calculateMaxSellable` as pure functions makes the core simulation rules deterministically testable without mocking Prisma or the RNG.
+- **Trade-off / what I gave up:** `Day` and `Purchase` have no `gameId` foreign key, so history isn't scoped per game session — starting a new game (`POST /api/game`) has to explicitly wipe `Day`/`Purchase` rows to avoid overlapping `dayNumber`s from a prior run. Acceptable given the stated non-goal of persistence beyond a single local session.
