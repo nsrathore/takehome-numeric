@@ -5,6 +5,7 @@ import {
   BASE_INGREDIENT_COST,
   BASE_PRICE,
   BULK_DISCOUNT_TIERS,
+  DEMAND_NOISE_RANGE,
   PRICE_ELASTICITY,
   RECIPE,
   STARTING_CASH,
@@ -268,7 +269,12 @@ export async function setPriceAndSimulateDay(input: SetPriceAndSimulateDayInput)
     throw new GameError("Game is over — start a new game before playing another day.");
   }
 
-  const demand = calculateDemand({ price, weather, dayNumber: game.currentDay }, Math.random());
+  // randomFactor represents day-to-day variance around expected demand, not
+  // a raw random draw -- it should average to 1.0 across many days, so it's
+  // built from a range centered at 1.0 (+/- DEMAND_NOISE_RANGE) rather than
+  // passing Math.random() (mean 0.5) straight through as a multiplier.
+  const noiseFactor = 1 - DEMAND_NOISE_RANGE + Math.random() * (2 * DEMAND_NOISE_RANGE);
+  const demand = calculateDemand({ price, weather, dayNumber: game.currentDay }, noiseFactor);
 
   // Serve customers one at a time rather than computing unitsSold in closed
   // form (min(demand, maxSellableByInventory)) -- mathematically equivalent

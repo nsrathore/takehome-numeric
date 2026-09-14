@@ -28,6 +28,12 @@ export const BASE_DEMAND = 100;
 // demand. Lowered to widen the live price range to roughly $0-$1.50.
 export const PRICE_ELASTICITY = 0.5;
 
+// Day-to-day demand noise, expressed as +/- a fraction of expected demand
+// (not a raw 0-1 draw -- see the noiseFactor comment at calculateDemand's
+// call site). Arbitrary/tunable per this take-home's own guidance not to
+// over-invest in tuning the simulation's numbers.
+export const DEMAND_NOISE_RANGE = 0.2;
+
 export const WEATHER_MULTIPLIERS = {
   sunny: 1.2,
   normal: 1.0,

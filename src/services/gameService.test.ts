@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { GameState } from "@prisma/client";
 import { prismaMock } from "@/test/prisma-mock";
-import { RECIPE } from "@/lib/gameConfig";
+import { BASE_DEMAND, BASE_PRICE, DEMAND_NOISE_RANGE, RECIPE } from "@/lib/gameConfig";
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
@@ -80,6 +80,29 @@ describe("calculateDemand (pure)", () => {
     const demand = calculateDemand({ price: 1, dayNumber: 1 }, 1);
     expect(demand).toBeGreaterThan(0);
     expect(demand).toBe(50);
+  });
+
+  // Regression test: the real call site used to pass raw Math.random()
+  // (mean 0.5, uniform 0-1) straight through as randomFactor, which meant
+  // demand averaged out to roughly half of BASE_DEMAND instead of BASE_DEMAND
+  // itself -- a directional test ("higher price -> lower demand") would
+  // never have caught this, since it holds regardless of where the noise is
+  // centered. Only a check against the theoretical expected *value* does.
+  it("averages close to the theoretical expected demand when noise is generated the way the real call site does", () => {
+    const price = BASE_PRICE; // priceMultiplier === 1 here
+    const weather = "normal" as const; // weatherMultiplier === 1 here
+    const theoreticalExpected = BASE_DEMAND; // BASE_DEMAND * 1 * 1
+
+    const samples = Array.from({ length: 200 }, () => {
+      const noiseFactor = 1 - DEMAND_NOISE_RANGE + Math.random() * (2 * DEMAND_NOISE_RANGE);
+      return calculateDemand({ price, weather, dayNumber: 1 }, noiseFactor);
+    });
+    const mean = samples.reduce((a, b) => a + b, 0) / samples.length;
+
+    // Generous relative to the noise range's own sampling error at n=200,
+    // but far tighter than the ~50-point gap the old bug would produce.
+    expect(mean).toBeGreaterThan(theoreticalExpected - 10);
+    expect(mean).toBeLessThan(theoreticalExpected + 10);
   });
 });
 
@@ -292,8 +315,13 @@ describe("setPriceAndSimulateDay", () => {
   // confirm it produces the exact same numbers the old
   // min(demand, maxSellableByInventory) formula would have.
   it("produces the same unitsSold/revenue/cogs/profit as the old min()-based formula", async () => {
-    const randomFactor = 0.9;
-    vi.spyOn(Math, "random").mockReturnValue(randomFactor);
+    const mockedRandom = 0.9;
+    vi.spyOn(Math, "random").mockReturnValue(mockedRandom);
+    // The call site derives noiseFactor from Math.random(), it doesn't pass
+    // Math.random()'s raw value straight through -- replicate that here so
+    // this independently-computed "expected" demand actually matches what
+    // setPriceAndSimulateDay will compute internally.
+    const noiseFactor = 1 - DEMAND_NOISE_RANGE + mockedRandom * (2 * DEMAND_NOISE_RANGE);
     const game = makeGame({
       cash: 20,
       iceStock: 7, // the binding constraint
@@ -311,7 +339,7 @@ describe("setPriceAndSimulateDay", () => {
     prismaMock.gameState.update.mockResolvedValue(makeGame());
 
     const price = 0.5;
-    const expectedDemand = calculateDemand({ price, dayNumber: game.currentDay }, randomFactor);
+    const expectedDemand = calculateDemand({ price, dayNumber: game.currentDay }, noiseFactor);
     const oldMaxSellable = maxSellableByInventory(game, RECIPE);
     const oldUnitsSold = Math.min(expectedDemand, oldMaxSellable);
     const oldRevenue = oldUnitsSold * price;
@@ -329,7 +357,7 @@ describe("setPriceAndSimulateDay", () => {
   });
 
   it("melts ice to 0 after the day while other ingredients carry forward what's left", async () => {
-    vi.spyOn(Math, "random").mockReturnValue(0.01); // minimize demand so stock isn't fully consumed
+    vi.spyOn(Math, "random").mockReturnValue(0.01); // low end of the noise range -> demand stays well under the abundant stock below
     const game = makeGame({
       cash: 20,
       iceStock: 100,
@@ -355,7 +383,9 @@ describe("setPriceAndSimulateDay", () => {
   });
 
   it("ends the game once cash is gone and there's no inventory left to sell", async () => {
-    vi.spyOn(Math, "random").mockReturnValue(0); // zero demand -> zero sales -> zero profit
+    // Math.random()=0 now maps to the low end of the noise range (not zero
+    // demand), but zero inventory means unitsSold is 0 regardless of demand.
+    vi.spyOn(Math, "random").mockReturnValue(0);
     const game = makeGame({ cash: 0, iceStock: 0, cupsStock: 0, lemonsStock: 0, sugarStock: 0 });
     prismaMock.gameState.findFirst.mockResolvedValue(game);
     prismaMock.day.create.mockImplementation((({ data }: { data: Record<string, unknown> }) =>
@@ -406,10 +436,12 @@ describe("setPriceAndSimulateDay", () => {
   it("across two days, cumulative cash added does not equal cumulative profit when leftover inventory carries COGS", async () => {
     const day1Game = makeGame({
       cash: 100,
-      iceStock: 50,
-      cupsStock: 50,
-      lemonsStock: 50,
-      sugarStock: 50,
+      // Stock comfortably exceeds the noise-adjusted demand range (roughly
+      // 80-120 at price=BASE_PRICE) so day 1 doesn't sell out.
+      iceStock: 200,
+      cupsStock: 200,
+      lemonsStock: 200,
+      sugarStock: 100,
       avgIceCost: 0.1,
       avgLemonCost: 0.2,
       avgSugarCost: 0.05,
@@ -435,7 +467,7 @@ describe("setPriceAndSimulateDay", () => {
     >;
     const day2Game = makeGame({
       cash: day1UpdateData.cash,
-      iceStock: 50,
+      iceStock: 200,
       cupsStock: day1UpdateData.cupsStock,
       lemonsStock: day1UpdateData.lemonsStock,
       sugarStock: day1UpdateData.sugarStock,
