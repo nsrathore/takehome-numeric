@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Day, GameState } from "@prisma/client";
 import { prismaMock } from "@/test/prisma-mock";
-import { BASE_DEMAND, BASE_PRICE, DEMAND_NOISE_RANGE, RECIPE, ROLLING_WINDOW_DAYS } from "@/lib/gameConfig";
+import {
+  BASE_DEMAND,
+  BASE_PRICE,
+  DEMAND_NOISE_RANGE,
+  RECIPE,
+  ROLLING_WINDOW_DAYS,
+  STARTING_CASH,
+} from "@/lib/gameConfig";
 
 vi.mock("@/lib/prisma", () => ({ prisma: prismaMock }));
 
@@ -168,6 +175,41 @@ describe("isBankrupt (pure)", () => {
   });
 });
 
+// The bankruptcy check runs post-ice-melt, and RECIPE.icePerCup > 0, so
+// maxSellableByInventory is ALWAYS 0 the moment it's evaluated -- regardless
+// of leftover cups/lemons/sugar. This means the practical bankruptcy trigger
+// is "cash <= 0" full stop; these tests prove that's a real consequence of
+// the melt + recipe, not a rule that happens to coincide with it, and that
+// it's still a genuine AND (not silently cash-only or inventory-only).
+describe("bankruptcy rule combined with post-melt inventory", () => {
+  it("maxSellableByInventory is always 0 once ice is melted, regardless of leftover cups/lemons/sugar", () => {
+    const cases = [
+      { iceStock: 0, cupsStock: 0, lemonsStock: 0, sugarStock: 0 },
+      { iceStock: 0, cupsStock: 1000, lemonsStock: 1000, sugarStock: 1000 },
+      { iceStock: 0, cupsStock: 1, lemonsStock: 1, sugarStock: 0.5 },
+    ];
+    for (const c of cases) {
+      expect(maxSellableByInventory(c, RECIPE)).toBe(0);
+    }
+  });
+
+  it("cash<=0 with substantial leftover non-ice inventory is still bankrupt (ice melt collapses the inventory clause)", () => {
+    const maxSellable = maxSellableByInventory(
+      { iceStock: 0, cupsStock: 500, lemonsStock: 500, sugarStock: 500 },
+      RECIPE,
+    );
+    expect(isBankrupt(-0.01, maxSellable)).toBe(true);
+  });
+
+  it("cash>0 with zero inventory of everything is NOT bankrupt -- confirms this is a true AND, not inventory-only", () => {
+    const maxSellable = maxSellableByInventory(
+      { iceStock: 0, cupsStock: 0, lemonsStock: 0, sugarStock: 0 },
+      RECIPE,
+    );
+    expect(isBankrupt(5, maxSellable)).toBe(false);
+  });
+});
+
 describe("getOrCreateGame", () => {
   it("creates a new game with starting cash when none exists", async () => {
     prismaMock.gameState.findFirst.mockResolvedValue(null);
@@ -191,6 +233,42 @@ describe("getOrCreateGame", () => {
     expect(prismaMock.gameState.update).toHaveBeenCalledWith({
       where: { id: stale.id },
       data: expect.objectContaining({ cash: 20, isGameOver: false, isBankrupt: false }),
+    });
+  });
+
+  it("applies a custom startingCash when creating a new game", async () => {
+    prismaMock.gameState.findFirst.mockResolvedValue(null);
+    prismaMock.gameState.create.mockResolvedValue(makeGame({ cash: 500 }));
+
+    await getOrCreateGame(500);
+
+    expect(prismaMock.gameState.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ cash: 500 }),
+    });
+  });
+
+  it.each([-10, 0, "not a number", NaN, Infinity, undefined, null])(
+    "falls back to STARTING_CASH for an invalid startingCash value (%p) instead of crashing",
+    async (invalid) => {
+      prismaMock.gameState.findFirst.mockResolvedValue(null);
+      prismaMock.gameState.create.mockResolvedValue(makeGame());
+
+      await getOrCreateGame(invalid);
+
+      expect(prismaMock.gameState.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ cash: STARTING_CASH }),
+      });
+    },
+  );
+
+  it("falls back to STARTING_CASH when startingCash exceeds the $10,000 cap", async () => {
+    prismaMock.gameState.findFirst.mockResolvedValue(null);
+    prismaMock.gameState.create.mockResolvedValue(makeGame());
+
+    await getOrCreateGame(50_000);
+
+    expect(prismaMock.gameState.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ cash: STARTING_CASH }),
     });
   });
 });

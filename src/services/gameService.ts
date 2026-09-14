@@ -54,9 +54,21 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
-function defaultGameStateData() {
+// Positive, capped at a sane max (not a security boundary -- just blocks an
+// absurd/broken starting state, e.g. a typo'd extra zero). Invalid or
+// omitted input silently falls back to STARTING_CASH rather than erroring,
+// since a bad "starting cash" input isn't worth failing the whole request
+// over.
+const StartingCashInput = z.number().positive().max(10_000);
+
+function resolveStartingCash(startingCash?: unknown): number {
+  const result = StartingCashInput.safeParse(startingCash);
+  return result.success ? result.data : STARTING_CASH;
+}
+
+function defaultGameStateData(startingCash?: unknown) {
   return {
-    cash: STARTING_CASH,
+    cash: resolveStartingCash(startingCash),
     currentDay: 1,
     iceStock: 0,
     lemonsStock: 0,
@@ -71,15 +83,15 @@ function defaultGameStateData() {
   };
 }
 
-export async function getOrCreateGame() {
+export async function getOrCreateGame(startingCash?: unknown) {
   const existing = await prisma.gameState.findFirst();
   if (!existing) {
-    return prisma.gameState.create({ data: defaultGameStateData() });
+    return prisma.gameState.create({ data: defaultGameStateData(startingCash) });
   }
   if (existing.isGameOver) {
     return prisma.gameState.update({
       where: { id: existing.id },
-      data: defaultGameStateData(),
+      data: defaultGameStateData(startingCash),
     });
   }
   return existing;
